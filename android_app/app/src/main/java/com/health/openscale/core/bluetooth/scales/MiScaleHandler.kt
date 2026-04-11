@@ -138,8 +138,15 @@ class MiScaleHandler : ScaleDeviceHandler() {
         // v2: set unit via vendor cfg (best-effort).
         if (variant == Variant.V2) runCatching { sendUnitV2(user) }
 
-        // Current time: prefer primary, fallback to alternate.
-        writeCurrentTimePreferPrimary(svcPrimary, svcAlternate)
+        // Sync current time to the scale.
+        if (variant == Variant.V2) {
+            // V2 uses vendor config characteristic (0x1542) — the standard 0x2A2B
+            // is not present on the Mi Scale 2 and writes to it are silently dropped.
+            writeCurrentTimeV2()
+        } else {
+            // V1 uses the standard Current Time characteristic.
+            writeCurrentTimePreferPrimary(svcPrimary, svcAlternate)
+        }
 
         if (variant == Variant.V1) {
             // ---- v1: match legacy order exactly ----
@@ -201,6 +208,28 @@ class MiScaleHandler : ScaleDeviceHandler() {
         val cmd = byteArrayOf(0x06, 0x04, 0x00, unit)
         writeTo(SERVICE_MI_CFG, CHAR_MI_CONFIG, cmd, withResponse = true)
         logD("Unit set (v2): ${cmd.toHexPreview(16)}")
+    }
+
+    /** v2-only: set current time via vendor config characteristic (cmd prefix 0x04). */
+    private fun writeCurrentTimeV2() {
+        val c = Calendar.getInstance() // local time — the scale has no timezone concept
+        val year = c.get(Calendar.YEAR)
+        val cmd = byteArrayOf(
+            0x04,
+            (year and 0xFF).toByte(), ((year shr 8) and 0xFF).toByte(),
+            (c.get(Calendar.MONTH) + 1).toByte(),
+            c.get(Calendar.DAY_OF_MONTH).toByte(),
+            c.get(Calendar.HOUR_OF_DAY).toByte(),
+            c.get(Calendar.MINUTE).toByte(),
+            c.get(Calendar.SECOND).toByte()
+        )
+        runCatching {
+            writeTo(SERVICE_MI_CFG, CHAR_MI_CONFIG, cmd, withResponse = true)
+        }.onSuccess {
+            logD("Current time written (v2 vendor config): ${cmd.toHexPreview(16)}")
+        }.onFailure {
+            logI("V2 vendor time write failed: ${it.message}")
+        }
     }
 
     /** Prefer writing Current Time to the primary service; fallback to alternate if needed. */
