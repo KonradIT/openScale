@@ -58,9 +58,10 @@ class MiScaleHandler : ScaleDeviceHandler() {
     private var variant: Variant = Variant.V1
 
     // GATT UUIDs
-    private val SERVICE_BODY_COMP = uuid16(0x181B)
-    private val SERVICE_WEIGHT    = uuid16(0x181D)
-    private val CHAR_CURRENT_TIME = uuid16(0x2A2B)
+    private val SERVICE_BODY_COMP    = uuid16(0x181B)
+    private val SERVICE_WEIGHT       = uuid16(0x181D)
+    private val SERVICE_CURRENT_TIME = uuid16(0x1805)
+    private val CHAR_CURRENT_TIME    = uuid16(0x2A2B)
     private val CHAR_WEIGHT_MEAS  = uuid16(0x2A9D) // usually absent on Mi
 
     // Mi vendor service (v2 only)
@@ -138,8 +139,15 @@ class MiScaleHandler : ScaleDeviceHandler() {
         // v2: set unit via vendor cfg (best-effort).
         if (variant == Variant.V2) runCatching { sendUnitV2(user) }
 
-        // Current time: prefer primary, fallback to alternate.
-        writeCurrentTimePreferPrimary(svcPrimary, svcAlternate)
+        // Sync current time to the scale.
+        if (variant == Variant.V2) {
+            // V2 uses vendor config characteristic (0x1542) — the standard 0x2A2B
+            // is not present on the Mi Scale 2 and writes to it are silently dropped.
+            writeCurrentTimeV2()
+        } else {
+            // V1 uses the standard Current Time characteristic.
+            writeCurrentTimePreferPrimary(svcPrimary, svcAlternate)
+        }
 
         if (variant == Variant.V1) {
             // ---- v1: match legacy order exactly ----
@@ -203,9 +211,35 @@ class MiScaleHandler : ScaleDeviceHandler() {
         logD("Unit set (v2): ${cmd.toHexPreview(16)}")
     }
 
+    /**
+     * V2: write current time via the dedicated Current Time Service (0x1805).
+     * The standard 0x2A2B characteristic lives under 0x1805 — NOT under
+     * 0x181B/0x181D where the old code tried to find it.
+     */
+    private fun writeCurrentTimeV2() {
+        val c = Calendar.getInstance() // local time — the scale has no timezone concept
+        val year = c.get(Calendar.YEAR)
+        val payload = byteArrayOf(
+            (year and 0xFF).toByte(), ((year shr 8) and 0xFF).toByte(),
+            (c.get(Calendar.MONTH) + 1).toByte(),
+            c.get(Calendar.DAY_OF_MONTH).toByte(),
+            c.get(Calendar.HOUR_OF_DAY).toByte(),
+            c.get(Calendar.MINUTE).toByte(),
+            c.get(Calendar.SECOND).toByte(),
+            0x00, 0x00, 0x00 // day-of-week=unknown, fractions256=0, adjust-reason=0
+        )
+        runCatching {
+            writeTo(SERVICE_CURRENT_TIME, CHAR_CURRENT_TIME, payload, withResponse = true)
+        }.onSuccess {
+            logD("Current time written (v2 CTS 0x1805): ${payload.toHexPreview(16)}")
+        }.onFailure {
+            logI("V2 CTS time write failed: ${it.message}")
+        }
+    }
+
     /** Prefer writing Current Time to the primary service; fallback to alternate if needed. */
     private fun writeCurrentTimePreferPrimary(primarySvc: UUID, alternateSvc: UUID) {
-        val c = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+        val c = Calendar.getInstance() // local time — the scale has no timezone concept
         val year = c.get(Calendar.YEAR)
         val payload = byteArrayOf(
             (year and 0xFF).toByte(), ((year shr 8) and 0xFF).toByte(),
@@ -456,7 +490,8 @@ class MiScaleHandler : ScaleDeviceHandler() {
     private fun parseMinuteDate(y: Int, m: Int, d: Int, h: Int, min: Int): Date? =
         runCatching {
             val sdf = SimpleDateFormat("yyyy/MM/dd/HH/mm", Locale.US)
-            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            // Scale timestamps are local time (we sync local time to the scale)
+            sdf.timeZone = TimeZone.getDefault()
             sdf.parse("$y/$m/$d/$h/$min")
         }.getOrNull()
 
