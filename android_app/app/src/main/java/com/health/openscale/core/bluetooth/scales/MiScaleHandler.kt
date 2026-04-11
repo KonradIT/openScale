@@ -58,9 +58,10 @@ class MiScaleHandler : ScaleDeviceHandler() {
     private var variant: Variant = Variant.V1
 
     // GATT UUIDs
-    private val SERVICE_BODY_COMP = uuid16(0x181B)
-    private val SERVICE_WEIGHT    = uuid16(0x181D)
-    private val CHAR_CURRENT_TIME = uuid16(0x2A2B)
+    private val SERVICE_BODY_COMP    = uuid16(0x181B)
+    private val SERVICE_WEIGHT       = uuid16(0x181D)
+    private val SERVICE_CURRENT_TIME = uuid16(0x1805)
+    private val CHAR_CURRENT_TIME    = uuid16(0x2A2B)
     private val CHAR_WEIGHT_MEAS  = uuid16(0x2A9D) // usually absent on Mi
 
     // Mi vendor service (v2 only)
@@ -210,25 +211,29 @@ class MiScaleHandler : ScaleDeviceHandler() {
         logD("Unit set (v2): ${cmd.toHexPreview(16)}")
     }
 
-    /** v2-only: set current time via vendor config characteristic (cmd prefix 0x04). */
+    /**
+     * V2: write current time via the dedicated Current Time Service (0x1805).
+     * The standard 0x2A2B characteristic lives under 0x1805 — NOT under
+     * 0x181B/0x181D where the old code tried to find it.
+     */
     private fun writeCurrentTimeV2() {
         val c = Calendar.getInstance() // local time — the scale has no timezone concept
         val year = c.get(Calendar.YEAR)
-        val cmd = byteArrayOf(
-            0x04,
+        val payload = byteArrayOf(
             (year and 0xFF).toByte(), ((year shr 8) and 0xFF).toByte(),
             (c.get(Calendar.MONTH) + 1).toByte(),
             c.get(Calendar.DAY_OF_MONTH).toByte(),
             c.get(Calendar.HOUR_OF_DAY).toByte(),
             c.get(Calendar.MINUTE).toByte(),
-            c.get(Calendar.SECOND).toByte()
+            c.get(Calendar.SECOND).toByte(),
+            0x00, 0x00, 0x00 // day-of-week=unknown, fractions256=0, adjust-reason=0
         )
         runCatching {
-            writeTo(SERVICE_MI_CFG, CHAR_MI_CONFIG, cmd, withResponse = true)
+            writeTo(SERVICE_CURRENT_TIME, CHAR_CURRENT_TIME, payload, withResponse = true)
         }.onSuccess {
-            logD("Current time written (v2 vendor config): ${cmd.toHexPreview(16)}")
+            logD("Current time written (v2 CTS 0x1805): ${payload.toHexPreview(16)}")
         }.onFailure {
-            logI("V2 vendor time write failed: ${it.message}")
+            logI("V2 CTS time write failed: ${it.message}")
         }
     }
 
